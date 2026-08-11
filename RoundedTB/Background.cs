@@ -20,6 +20,18 @@ namespace RoundedTB
         bool redrawOverride = false;
         int infrequentCount = 0;
 
+        // Backoff for taskbar regeneration. While Explorer is down the handles stay null, and
+        // rebuilding the UI Automation objects on every 100ms tick is what pins the CPU.
+        private const int RegenBackoffInitialTicks = 1;  // 100ms
+        private const int RegenBackoffMaxTicks = 50;     // 5s
+        private int regenBackoffTicks;
+        private int regenCooldownTicks;
+        private bool regenDegraded;
+
+        // Hover state is transient and must never be written into the persisted settings.
+        private bool hoverShowTray;
+        private bool hoverShowWidgets;
+
         public Background()
         {
             mw = (MainWindow)Application.Current.MainWindow;
@@ -106,16 +118,40 @@ namespace RoundedTB
                             taskbars = Taskbar.GenerateTaskbarInfo(mw.interaction.IsWindows11());
                             mw.interaction.RefreshUiTray(isForceReset: true);
                             Debug.WriteLine("Regenerating taskbar info");
+
+                            // Explorer coming back changes the main handle, so this is the path that
+                            // usually fires on recovery - clear any backoff left over from its absence.
+                            if (TaskbarHandlesAreValid(taskbars))
+                            {
+                                ResetRegenBackoff();
+                            }
                         }
 
                         for (int current = 0; current < taskbars.Count; current++)
                         {
                             if (taskbars[current].TaskbarHwnd == IntPtr.Zero || taskbars[current].AppListHwnd == IntPtr.Zero)
                             {
+                                // Explorer is (probably) gone. Retry with an exponential backoff instead of
+                                // rebuilding CUIAutomation + AppListXaml ten times a second until it returns.
+                                if (regenCooldownTicks > 0)
+                                {
+                                    regenCooldownTicks--;
+                                    break;
+                                }
+
                                 taskbars.ForEach(t => t.Dispose());
                                 taskbars = Taskbar.GenerateTaskbarInfo(mw.interaction.IsWindows11());
                                 mw.interaction.RefreshUiTray(isForceReset: true);
                                 Debug.WriteLine("Regenerating taskbar info due to a missing handle");
+
+                                if (TaskbarHandlesAreValid(taskbars))
+                                {
+                                    ResetRegenBackoff();
+                                }
+                                else
+                                {
+                                    EscalateRegenBackoff();
+                                }
                                 break;
                             }
                             // Get the latest quick details of this taskbar
@@ -133,7 +169,10 @@ namespace RoundedTB
                                 continue;
                             }
 
-                            // Showhide tray on hover
+                            // Showhide tray on hover. The result goes into effectiveSettings, never into
+                            // the persisted settings object - otherwise a WriteJSON while hovering would
+                            // overwrite the user's own ShowTray/ShowWidgets choices.
+                            Types.Settings effectiveSettings = settings;
                             if (settings.ShowSegmentsOnHover)
                             {
                                 LocalPInvoke.RECT currentTrayRect = taskbars[current].TrayRect;
@@ -145,28 +184,32 @@ namespace RoundedTB
                                     LocalPInvoke.GetCursorPos(out LocalPInvoke.POINT msPt);
                                     bool isHoveringOverTray = LocalPInvoke.PtInRect(ref currentTrayRect, msPt);
                                     bool isHoveringOverWidgets = LocalPInvoke.PtInRect(ref currentWidgetsRect, msPt);
-                                    if (isHoveringOverTray && !settings.ShowTray)
+                                    if (isHoveringOverTray && !hoverShowTray)
                                     {
-                                        settings.ShowTray = true;
+                                        hoverShowTray = true;
                                         taskbars[current].Ignored = true;
                                     }
                                     else if (!isHoveringOverTray)
                                     {
                                         taskbars[current].Ignored = true;
-                                        settings.ShowTray = false;
+                                        hoverShowTray = false;
                                     }
 
-                                    if (isHoveringOverWidgets && !settings.ShowWidgets)
+                                    if (isHoveringOverWidgets && !hoverShowWidgets)
                                     {
-                                        settings.ShowWidgets = true;
+                                        hoverShowWidgets = true;
                                         taskbars[current].Ignored = true;
                                     }
                                     else if (!isHoveringOverWidgets)
                                     {
                                         taskbars[current].Ignored = true;
-                                        settings.ShowWidgets = false;
+                                        hoverShowWidgets = false;
                                     }
                                 }
+
+                                effectiveSettings = settings.ShallowCopy();
+                                effectiveSettings.ShowTray = hoverShowTray;
+                                effectiveSettings.ShowWidgets = hoverShowWidgets;
                             }
 
                             if (settings.AutoHide > 0)
@@ -267,7 +310,7 @@ namespace RoundedTB
                                     taskbars[current].TaskbarRect = newTaskbar.TaskbarRect;
                                     taskbars[current].AppListRect = newTaskbar.AppListRect;
                                     taskbars[current].TrayRect = newTaskbar.TrayRect;
-                                    Taskbar.UpdateSimpleTaskbar(taskbars[current], settings);
+                                    Taskbar.UpdateSimpleTaskbar(taskbars[current], effectiveSettings);
                                     mw.interaction.AddLog($"Updated taskbar {current} simply");
                                 }
                                 else
@@ -278,7 +321,7 @@ namespace RoundedTB
                                         taskbars[current].TaskbarRect = newTaskbar.TaskbarRect;
                                         taskbars[current].AppListRect = newTaskbar.AppListRect;
                                         taskbars[current].TrayRect = newTaskbar.TrayRect;
-                                        Taskbar.UpdateDynamicTaskbar(taskbars[current], settings);
+                                        Taskbar.UpdateDynamicTaskbar(taskbars[current], effectiveSettings);
                                         mw.interaction.AddLog($"Updated taskbar {current} dynamically");
                                     }
                                 }
@@ -290,12 +333,73 @@ namespace RoundedTB
                         System.Threading.Thread.Sleep(100);
                     }
                 }
-                catch (TypeInitializationException ex)
+                catch (Exception ex)
                 {
+                    // Anything escaping here is swallowed by BackgroundWorker and handed to
+                    // RunWorkerCompleted, which silently ends the loop - so log it and let
+                    // MainWindow's RunWorkerCompleted handler restart us.
                     mw.interaction.AddLog(ex.Message);
-                    mw.interaction.AddLog(ex.InnerException.Message);
+                    if (ex.InnerException != null)
+                    {
+                        mw.interaction.AddLog(ex.InnerException.Message);
+                    }
+                    Debug.WriteLine($"Taskbar worker failed: {ex}");
                     throw;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Checks whether every known taskbar has the handles the main loop needs.
+        /// </summary>
+        private static bool TaskbarHandlesAreValid(List<Types.Taskbar> taskbars)
+        {
+            if (taskbars == null || taskbars.Count == 0)
+            {
+                return false;
+            }
+            foreach (Types.Taskbar taskbar in taskbars)
+            {
+                if (taskbar.TaskbarHwnd == IntPtr.Zero || taskbar.AppListHwnd == IntPtr.Zero)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void ResetRegenBackoff()
+        {
+            regenBackoffTicks = 0;
+            regenCooldownTicks = 0;
+            if (regenDegraded)
+            {
+                regenDegraded = false;
+                mw.interaction.AddLog("Taskbar handles recovered.");
+                Debug.WriteLine("Taskbar handles recovered");
+                mw.SetTrayStatus(null);
+            }
+        }
+
+        private void EscalateRegenBackoff()
+        {
+            if (regenBackoffTicks == 0)
+            {
+                regenBackoffTicks = RegenBackoffInitialTicks;
+            }
+            else if (regenBackoffTicks < RegenBackoffMaxTicks)
+            {
+                regenBackoffTicks = Math.Min(regenBackoffTicks * 2, RegenBackoffMaxTicks);
+            }
+            regenCooldownTicks = regenBackoffTicks;
+
+            // Once we're retrying at the slowest rate, say so rather than degrading silently.
+            if (regenBackoffTicks >= RegenBackoffMaxTicks && !regenDegraded)
+            {
+                regenDegraded = true;
+                mw.interaction.AddLog("Taskbar handles unavailable - retrying slowly.");
+                Debug.WriteLine("Taskbar handles unavailable - retrying slowly");
+                mw.SetTrayStatus("RoundedTB - waiting for the taskbar...");
             }
         }
     }

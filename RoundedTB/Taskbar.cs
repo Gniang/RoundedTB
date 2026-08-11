@@ -539,7 +539,7 @@ namespace RoundedTB
                     {
                         hwndSecTray = LocalPInvoke.FindWindowExA(hwndCurrent, IntPtr.Zero, "TrayNotifyWnd", null); // Get handle to this secondary taskbar's tray
                     }
-                    LocalPInvoke.GetWindowRect(hwndTray, out LocalPInvoke.RECT rectSecTray); // Get the RECT for this secondary taskbar's tray
+                    LocalPInvoke.GetWindowRect(hwndSecTray, out LocalPInvoke.RECT rectSecTray); // Get the RECT for this secondary taskbar's tray
                     IntPtr hwndWorkerW = LocalPInvoke.FindWindowExA(hwndCurrent, IntPtr.Zero, "WorkerW", null);
                     IntPtr hwndSecAppList = IntPtr.Zero;
                     // windows 11 22H2 has multiple WorkerW handles.

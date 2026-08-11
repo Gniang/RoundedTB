@@ -36,8 +36,13 @@ namespace RoundedTB
         public bool isWindows11;
         public List<Types.Taskbar> taskbarDetails = new List<Types.Taskbar>();
         public bool shouldReallyDieNoReally = false;
-        public string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rtb.json");
-        public string logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "rtb.log");
+        /// <summary>
+        /// %LOCALAPPDATA%\RoundedTB. Versions up to now dropped rtb.json and rtb.log loose in the
+        /// root of LocalApplicationData; Interaction.FileSystem moves them in here on first run.
+        /// </summary>
+        public static readonly string settingsFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RoundedTB");
+        public string configPath = Path.Combine(settingsFolder, "rtb.json");
+        public string logPath = Path.Combine(settingsFolder, "rtb.log");
         public Types.Settings activeSettings = new Types.Settings();
         public BackgroundWorker taskbarThread = new BackgroundWorker();
         public IntPtr hwndDesktopButton = IntPtr.Zero;
@@ -46,6 +51,14 @@ namespace RoundedTB
         public bool isCentred = false;
         public bool isAlreadyRunning = false;
         private bool taskbarsRestored = false;
+
+        // Restart bookkeeping for the taskbar worker. An unhandled exception used to end the
+        // loop silently, leaving the app running but doing nothing at all.
+        private const int MaxWorkerRestarts = 5;
+        private static readonly TimeSpan WorkerRestartWindow = TimeSpan.FromMinutes(1);
+        private int workerRestartCount = 0;
+        private DateTime workerRestartWindowStart = DateTime.MinValue;
+        private object workerArguments = null;
 
         /// <summary>
         /// Set in the constructor so App.OnExit can reach the window during shutdown.
@@ -178,6 +191,7 @@ namespace RoundedTB
             taskbarThread.WorkerSupportsCancellation = true;
             taskbarThread.WorkerReportsProgress = true;
             taskbarThread.DoWork += background.DoWork;
+            taskbarThread.RunWorkerCompleted += TaskbarThread_RunWorkerCompleted;
 
             // Load settings into memory/UI
             interaction.FileSystem();
@@ -478,6 +492,88 @@ namespace RoundedTB
             }
         }
 
+        /// <summary>
+        /// Starts the taskbar worker, remembering its arguments so it can be restarted after a fault.
+        /// </summary>
+        private void StartTaskbarWorker(object arguments)
+        {
+            workerArguments = arguments;
+            taskbarThread.RunWorkerAsync(arguments);
+        }
+
+        /// <summary>
+        /// BackgroundWorker swallows exceptions thrown from DoWork and surfaces them here. Without
+        /// this handler the loop just stopped and RoundedTB sat there doing nothing, so record the
+        /// fault and bring the loop back - with a cap so a permanent fault can't spin forever.
+        /// </summary>
+        private void TaskbarThread_RunWorkerCompleted(object sender, RunWorkerCompletedEventArgs e)
+        {
+            if (e.Cancelled || shouldReallyDieNoReally || taskbarsRestored)
+            {
+                return;
+            }
+
+            if (e.Error != null)
+            {
+                interaction.AddLog($"Taskbar worker faulted: {e.Error}");
+                Debug.WriteLine($"Taskbar worker faulted: {e.Error}");
+            }
+
+            DateTime now = DateTime.UtcNow;
+            if (now - workerRestartWindowStart > WorkerRestartWindow)
+            {
+                workerRestartWindowStart = now;
+                workerRestartCount = 0;
+            }
+
+            if (workerRestartCount >= MaxWorkerRestarts)
+            {
+                interaction.AddLog("Taskbar worker restarted too often - giving up.");
+                Debug.WriteLine("Taskbar worker restarted too often - giving up");
+                SetTrayStatus("RoundedTB - stopped after repeated errors");
+                return;
+            }
+            workerRestartCount++;
+
+            // Restart off the current callback so the worker is no longer marked busy.
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                if (shouldReallyDieNoReally || taskbarsRestored || taskbarThread.IsBusy)
+                {
+                    return;
+                }
+                try
+                {
+                    taskbarThread.RunWorkerAsync(workerArguments);
+                }
+                catch (Exception ex)
+                {
+                    interaction.AddLog($"Failed to restart taskbar worker: {ex.Message}");
+                    Debug.WriteLine($"Failed to restart taskbar worker: {ex.Message}");
+                }
+            }));
+        }
+
+        /// <summary>
+        /// Surfaces a degraded state on the tray icon, or clears it when passed null.
+        /// Safe to call from the worker thread.
+        /// </summary>
+        public void SetTrayStatus(string status)
+        {
+            Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                try
+                {
+                    mainTitleBar.NotifyIconTooltip = string.IsNullOrEmpty(status) ? "RoundedTB" : status;
+                    mainTitleBar.ResetIcon();
+                }
+                catch (Exception)
+                {
+                    // Cosmetic only - never let this take the app down.
+                }
+            }));
+        }
+
         public void TrayIconCheck(bool isForceReset)
         {
             Uri resLight = new("pack://application:,,,/res/traylight.ico");
@@ -591,7 +687,7 @@ namespace RoundedTB
 
             if (taskbarThread.IsBusy == false)
             {
-                taskbarThread.RunWorkerAsync((mt, ml, mb, mr, 0));
+                StartTaskbarWorker((mt, ml, mb, mr, 0));
             }
             else
             {
@@ -601,7 +697,7 @@ namespace RoundedTB
                     System.Windows.Forms.Application.DoEvents();
                     System.Threading.Thread.Sleep(100);
                 }
-                taskbarThread.RunWorkerAsync((mt, ml, mb, mr, 0));
+                StartTaskbarWorker((mt, ml, mb, mr, 0));
             }
 
             if (activeSettings.AutoHide < 1)
