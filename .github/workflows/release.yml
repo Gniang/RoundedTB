@@ -41,7 +41,6 @@ jobs:
           "tag=$tag" >> $env:GITHUB_OUTPUT
 
       # Self-contained, single file. Compression is not optional here: without it the
-      # exe is ~177 MB instead of ~79 MB. Trimming is unavailable - WPF does not support it.
       - name: Publish (self-contained)
         run: >
           dotnet publish RoundedTB/RoundedTB.csproj
@@ -51,8 +50,7 @@ jobs:
           -p:DebugType=none
           -o publish/RoundedTB
 
-      # Five native WPF DLLs stay outside the single file, so shipping the bare exe
-      # produces something that does not start. Always archive the whole folder.
+      # WPF DLLs isolated; single EXE fails. Always archive the whole folder.
       - name: Archive
         shell: pwsh
         run: |
@@ -65,9 +63,48 @@ jobs:
           draft: true
           generate_release_notes: true
           body: |
-            Self-contained build for Windows x64 - no .NET runtime needed.
-            Extract the whole `RoundedTB` folder and run `RoundedTB.exe`; the exe
-            will not start on its own without the DLLs next to it.
+            <!-- Write the "## changes <date>" section here, above this line. -->
 
-            The binary is unsigned, so SmartScreen will warn on first run.
+            <br />
+            <br />
+            <br />
+
+
+            ## List of past changes from the original (torchgm's RoundedTB)
+
+            Feature
+
+            * Added a setting for the secondary monitor's clock.
+              * You choose the width of the clock (and widget) area.
+
+            Fix
+
+            * Supported 22H2 or later.
+            * Fixed the widget area setting not working.
+
+            ## Note to those who used the original version
+
+            #### If the app will not launch
+
+            Old settings files are converted automatically as of this build, so the previous
+            workaround (renaming `rtb.json`) is no longer needed. If it still fails to start,
+            rename `%LOCALAPPDATA%\RoundedTB\rtb.json` and open an issue with the details.
+
+            #### File size
+
+            The app is large, as a result of solving the following:
+
+            1. runnable on vanilla Windows 11.
+            2. enable setting the "Run at startup" option.
+
+            Windows 11 does not include the .NET 10 runtime, so this app ships with the runtime
+            inside it. That is where the size comes from.
+
+            I could not make a runtime-less version, because it produces two files, a dll and an
+            exe, with the real body in the dll. That triggers the
+            ['"Run at startup" option is not working'](https://github.com/torchgm/RoundedTB/issues/268) issue.
+
+            #### SmartScreen
+
+            The exe is not code-signed, so SmartScreen will warn the first time you run it.
           files: RoundedTB_*_win-x64.zip
