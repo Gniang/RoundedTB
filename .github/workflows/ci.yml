@@ -1,7 +1,7 @@
 name: ci
 
-# Build verification only. This repository is a fork with no delivery path,
-# so there is deliberately no release, publish, or artifact-upload step here.
+# Build verification only. Distribution lives in release.yml, which runs on tags
+# alone - keep every publish/upload step out of this workflow.
 on:
   push:
   pull_request:
