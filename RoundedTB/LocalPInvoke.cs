@@ -45,7 +45,7 @@ namespace RoundedTB
         public static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
 
         [DllImport("user32.dll")]
-        public static extern IntPtr FindWindowExA(IntPtr hWndParent, IntPtr hWndChildAfter, string lpszClass, string lpszWindow);
+        public static extern IntPtr FindWindowExA(IntPtr hWndParent, IntPtr hWndChildAfter, string? lpszClass, string? lpszWindow);
 
         [DllImport("user32.dll")]
         public static extern int GetDpiForWindow(IntPtr hwnd);
