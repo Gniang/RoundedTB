@@ -45,6 +45,15 @@ namespace RoundedTB
         public int numberToForceRefresh = 0;
         public bool isCentred = false;
         public bool isAlreadyRunning = false;
+        private bool taskbarsRestored = false;
+
+        /// <summary>
+        /// Set in the constructor so App.OnExit can reach the window during shutdown.
+        /// Application.Current.MainWindow is not a dependable route at that point - the
+        /// windows collection has already been torn down. Phase 4 should replace this
+        /// with proper lifetime ownership rather than ambient statics.
+        /// </summary>
+        internal static MainWindow? Instance { get; private set; }
         public Background background;
         public Interaction interaction;
         private HwndSource source;
@@ -91,6 +100,8 @@ namespace RoundedTB
 
         public MainWindow()
         {
+            Instance = this;
+
             WPFUI.Background.Manager.Apply(WPFUI.Background.BackgroundType.Mica, this);
 
             InitializeComponent();
@@ -607,6 +618,60 @@ namespace RoundedTB
 
         }
 
+        /// <summary>
+        /// Stops the background worker and returns every taskbar to its unmodified state.
+        ///
+        /// Safe to call more than once, because there are two ways out of the app and only
+        /// one of them goes through OnClosing's "really closing" branch: the title bar's
+        /// close button has ApplicationNavigation="True", so WPF-UI calls
+        /// Application.Shutdown() directly and OnClosing still sees shouldReallyDieNoReally
+        /// as false. App.OnExit therefore calls this as a backstop - without it, the window
+        /// regions survive the process and the taskbar stays clipped.
+        /// </summary>
+        public void RestoreTaskbars()
+        {
+            if (taskbarsRestored)
+            {
+                return;
+            }
+            taskbarsRestored = true;
+
+            try
+            {
+                taskbarThread.CancelAsync();
+            }
+            catch (Exception aaaa)
+            {
+                interaction.AddLog(aaaa.Message);
+            }
+
+            // Bounded wait: a hang here would leave the taskbar clipped, which is exactly
+            // the failure we are trying to prevent. The worker sleeps 100ms per iteration.
+            DateTime waitUntil = DateTime.UtcNow.AddSeconds(2);
+            while (taskbarThread.IsBusy && DateTime.UtcNow < waitUntil)
+            {
+                System.Windows.Forms.Application.DoEvents();
+                System.Threading.Thread.Sleep(50);
+            }
+
+            try
+            {
+                foreach (var tbDeets in taskbarDetails)
+                {
+                    Taskbar.ResetTaskbar(tbDeets, activeSettings);
+                }
+                if (activeSettings.AutoHide > 0)
+                {
+                    AutoHide(false, taskbarDetails);
+                }
+            }
+            catch (InvalidOperationException aaaa)
+            {
+                interaction.AddLog($"Taskbar structure changed on exit:\n{aaaa.Message}");
+            }
+            interaction.AddLog("Exiting RoundedTB.");
+        }
+
         protected override void OnClosing(CancelEventArgs e)
         {
             base.OnClosing(e);
@@ -619,38 +684,7 @@ namespace RoundedTB
             }
             else
             {
-
-
-                try
-                {
-                    taskbarThread.CancelAsync();
-                }
-                catch (Exception aaaa)
-                {
-                    interaction.AddLog(aaaa.Message);
-                }
-                while (taskbarThread.IsBusy == true)
-                {
-                    System.Windows.Forms.Application.DoEvents();
-                    System.Threading.Thread.Sleep(100);
-                }
-
-                try
-                {
-                    foreach (var tbDeets in taskbarDetails)
-                    {
-                        Taskbar.ResetTaskbar(tbDeets, activeSettings);
-                    }
-                    if (activeSettings.AutoHide > 0)
-                    {
-                        AutoHide(false, taskbarDetails);
-                    }
-                }
-                catch (InvalidOperationException aaaa)
-                {
-                    interaction.AddLog($"Taskbar structure changed on exit:\n{aaaa.Message}");
-                }
-                interaction.AddLog("Exiting RoundedTB.");
+                RestoreTaskbars();
             }
             if (!isAlreadyRunning)
             {
