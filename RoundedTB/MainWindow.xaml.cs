@@ -1,5 +1,4 @@
-﻿using IWshRuntimeLibrary;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -721,14 +720,14 @@ namespace RoundedTB
                 {
                     Directory.CreateDirectory(shortcutFolder);
                 }
-                WshShell shellClass = new WshShell();
                 string rtbStartupLink = Path.Combine(shortcutFolder, "RoundedTB.lnk");
-                IWshShortcut shortcut = (IWshShortcut)shellClass.CreateShortcut(rtbStartupLink);
-                shortcut.TargetPath = Environment.GetCommandLineArgs()[0];
-                shortcut.IconLocation = Environment.GetCommandLineArgs()[0];
-                shortcut.Arguments = "";
-                shortcut.Description = "Start RoundedTB";
-                shortcut.Save();
+                string rtbExecutable = Environment.GetCommandLineArgs()[0];
+                ShellLink.CreateShortcut(
+                    linkPath: rtbStartupLink,
+                    targetPath: rtbExecutable,
+                    iconPath: rtbExecutable,
+                    arguments: "",
+                    description: "Start RoundedTB");
             }
             catch (Exception)
             {
