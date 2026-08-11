@@ -1,39 +1,30 @@
-name: release
+name: ci
 
+# Build verification only. This repository is a fork with no delivery path,
+# so there is deliberately no release, publish, or artifact-upload step here.
 on:
   push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     name: build-windows
-    runs-on: windows-2022
+    runs-on: windows-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-      with:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
           submodules: recursive
-          
-    - name: Set up MSBuild
-      uses: microsoft/setup-msbuild@v1
-      
-    - name: NuGet Restore
-      run: |
-        cd ${{ github.workspace }}
-        nuget restore RoundedTB.sln
-      
-    - name: Build
-      run: |
-        cd ${{ github.workspace }}
-        msbuild "-property:Configuration=Release" -t:RoundedTB
 
-    - name: Add commit hash to output folder
-      run: |
-        Rename-Item -Path ".\RoundedTB\bin\Release" -NewName "RoundedTB-$(git rev-parse --short ${{ github.sha }})"
-        
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: rtb-artifacts
-        path: |
-          .\RoundedTB\bin\RoundedTB-*\
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore RoundedTB.sln
+
+      - name: Build
+        run: dotnet build RoundedTB.sln --configuration Release --no-restore

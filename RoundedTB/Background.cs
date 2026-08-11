@@ -294,7 +294,7 @@ namespace RoundedTB
                 {
                     mw.interaction.AddLog(ex.Message);
                     mw.interaction.AddLog(ex.InnerException.Message);
-                    throw ex;
+                    throw;
                 }
             }
         }
