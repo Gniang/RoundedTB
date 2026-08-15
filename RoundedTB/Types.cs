@@ -28,6 +28,11 @@ namespace RoundedTB
             public bool Ignored { get; set; } // Specifies if the taskbar should be ignored when applying changes
             public bool TaskbarHidden { get; set; } // Specifies if this taskbar is currently hidden by RTB
             public bool TrayHidden { get; set; } // Specifies if the tray is currently hidden by RTB on this taskbar
+            /// <summary>
+            /// Last answer from TaskbarShouldBeFilled. Cached because that check enumerates every
+            /// top-level window, so it only re-runs on a foreground/minimise event or the health tick.
+            /// </summary>
+            public bool FilledForMaximised { get; set; }
             public int AppListWidth { get; set; } // Specifies the width of the app list
             public bool IsSecondary { get; set; }
 
@@ -42,6 +47,11 @@ namespace RoundedTB
         {
             private IUIAutomationElement? _taskbarFrame;
             private IUIAutomation? _uia;
+            // Both were being recreated on every single measurement - the true condition was
+            // allocated per call and never released at all, which is most of the RCW churn that
+            // showed up as RoundedTB's memory climbing.
+            private IUIAutomationCondition? _trueCondition;
+            private IUIAutomationCacheRequest? _cacheRequest;
             private readonly IntPtr _hwndTaskbarMain;
 
             // singleton checker
@@ -53,6 +63,17 @@ namespace RoundedTB
             {
                 this._hwndTaskbarMain = hwndTaskbarMain;
                 this._uia = new CUIAutomation();
+                _trueCondition = _uia.CreateTrueCondition();
+
+                // One cache request, reused: FindAllBuildCache brings every child's bounding
+                // rectangle back in a single cross-process call, where the old code did one RPC
+                // per taskbar button. AutomationElementMode_None keeps the returned elements as
+                // pure cache holders rather than live proxies back into explorer.exe.
+                _cacheRequest = _uia.CreateCacheRequest();
+                _cacheRequest.AddProperty(UIA_PropertyIds.UIA_BoundingRectanglePropertyId);
+                _cacheRequest.AutomationElementMode = AutomationElementMode.AutomationElementMode_None;
+                _cacheRequest.TreeScope = Interop.UIAutomationClient.TreeScope.TreeScope_Element;
+
                 _taskbarFrame = GetTaskbarFrameElement(this._hwndTaskbarMain, this._uia);
             }
 
@@ -92,7 +113,7 @@ namespace RoundedTB
 
             public LocalPInvoke.RECT? GetWindowRect()
             {
-                if (_taskbarFrame == null || _uia == null)
+                if (_taskbarFrame == null || _uia == null || _trueCondition == null || _cacheRequest == null)
                 {
                     return null;
                 }
@@ -105,9 +126,10 @@ namespace RoundedTB
                 IUIAutomationElement? child = null;
                 try
                 {
-                    children = _taskbarFrame.FindAll(
+                    children = _taskbarFrame.FindAllBuildCache(
                         Interop.UIAutomationClient.TreeScope.TreeScope_Children,
-                        _uia.CreateTrueCondition());
+                        _trueCondition,
+                        _cacheRequest);
                     tagRECT? leftRect = null;
                     tagRECT? rightRect = null;
                     int len = children.Length;
@@ -119,7 +141,7 @@ namespace RoundedTB
                     for (int i = 0; i < len; i++)
                     {
                         child = children.GetElement(i);
-                        tagRECT r = child.CurrentBoundingRectangle;
+                        tagRECT r = child.CachedBoundingRectangle;
                         if (leftRect == null || r.left < leftRect.Value.left)
                         {
                             leftRect = r;
@@ -171,6 +193,16 @@ namespace RoundedTB
                     Marshal.ReleaseComObject(_taskbarFrame);
                     _taskbarFrame = null;
                 }
+                if (_cacheRequest != null)
+                {
+                    Marshal.ReleaseComObject(_cacheRequest);
+                    _cacheRequest = null;
+                }
+                if (_trueCondition != null)
+                {
+                    Marshal.ReleaseComObject(_trueCondition);
+                    _trueCondition = null;
+                }
                 if (_uia != null)
                 {
                     Marshal.ReleaseComObject(_uia);
@@ -202,6 +234,14 @@ namespace RoundedTB
             public bool FillOnTaskSwitch { get; set; }
             public bool ShowSegmentsOnHover { get; set; }
             public int AutoHide { get; set; }
+
+            /// <summary>
+            /// Drives the taskbar loop from shell events instead of a 10Hz poll. There is no UI for
+            /// this: it is an escape hatch for anyone whose taskbar stops tracking, so they can set
+            /// it to false in rtb.json and get the old loop back while the cause is worked out.
+            /// Remove the polling path, and this flag with it, once the event path has proven itself.
+            /// </summary>
+            public bool UseEventDrivenUpdates { get; set; }
 
             /// <summary>
             /// Copy used for transient, non-persisted overrides (e.g. hover state) so that runtime

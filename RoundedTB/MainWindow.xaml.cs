@@ -692,6 +692,7 @@ namespace RoundedTB
             else
             {
                 taskbarThread.CancelAsync();
+                background?.Wake();
                 while (taskbarThread.IsBusy == true)
                 {
                     System.Windows.Forms.Application.DoEvents();
@@ -717,12 +718,12 @@ namespace RoundedTB
         /// <summary>
         /// Stops the background worker and returns every taskbar to its unmodified state.
         ///
-        /// Safe to call more than once, because there are two ways out of the app and only
-        /// one of them goes through OnClosing's "really closing" branch: the title bar's
-        /// close button has ApplicationNavigation="True", so WPF-UI calls
-        /// Application.Shutdown() directly and OnClosing still sees shouldReallyDieNoReally
-        /// as false. App.OnExit therefore calls this as a backstop - without it, the window
-        /// regions survive the process and the taskbar stays clipped.
+        /// Safe to call more than once. The title bar's close button only hides the window
+        /// (ApplicationNavigation="False", so WPF-UI routes it through Window.Close() and
+        /// OnClosing cancels it), and the tray menu's "Close RoundedTB" is the real exit.
+        /// App.OnExit still calls this as a backstop for shutdown routes that bypass
+        /// OnClosing entirely, such as session logoff - without it, the window regions
+        /// survive the process and the taskbar stays clipped.
         /// </summary>
         public void RestoreTaskbars()
         {
@@ -735,6 +736,9 @@ namespace RoundedTB
             try
             {
                 taskbarThread.CancelAsync();
+                // The event-driven loop can be parked for up to a second waiting on the shell,
+                // so nudge it rather than sitting out the wait below.
+                background?.Wake();
             }
             catch (Exception aaaa)
             {
@@ -742,7 +746,7 @@ namespace RoundedTB
             }
 
             // Bounded wait: a hang here would leave the taskbar clipped, which is exactly
-            // the failure we are trying to prevent. The worker sleeps 100ms per iteration.
+            // the failure we are trying to prevent.
             DateTime waitUntil = DateTime.UtcNow.AddSeconds(2);
             while (taskbarThread.IsBusy && DateTime.UtcNow < waitUntil)
             {

@@ -203,7 +203,8 @@ namespace RoundedTB
                     FillOnMaximise = true,
                     FillOnTaskSwitch = true,
                     ShowSegmentsOnHover = false,
-                    AutoHide = 0
+                    AutoHide = 0,
+                    UseEventDrivenUpdates = true
                 };
             }
 
@@ -227,7 +228,8 @@ namespace RoundedTB
                 FillOnMaximise = true,
                 FillOnTaskSwitch = false,
                 ShowSegmentsOnHover = false,
-                AutoHide = 0
+                AutoHide = 0,
+                UseEventDrivenUpdates = true
             };
         }
 
